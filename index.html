@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Asistencia con QR - Generador y Lector</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 14px; max-width: 980px; }
+    h1 { margin-bottom: 6px; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+    label { display:block; margin-top:8px; font-weight:600; }
+    input[type="text"], input[type="search"] { width:100%; padding:8px; box-sizing:border-box; border-radius:6px; border:1px solid #ccc }
+    button { padding:8px 12px; margin-top:8px; border-radius:6px; cursor:pointer; }
+    #qrcode { margin-top:12px; }
+    table { width:100%; border-collapse:collapse; margin-top:10px; }
+    th, td { border: 1px solid #e5e5e5; padding:8px; text-align:left; font-size:14px; }
+    th { background:#fafafa; }
+    .small { font-size:13px; color:#555; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+    @media(min-width:700px){ .flex-row{ display:flex; gap:12px; } .col { flex:1 } }
+  </style>
+  <!-- Librerías -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/minified/html5-qrcode.min.js"></script>
+</head>
+<body>
+  <h1>Asistencia por QR</h1>
+  <p class="small">Genera un QR para cada persona o escanea desde el móvil para registrar asistencia. Exporta en CSV para abrir en Excel.</p>
+
+  <div class="card">
+    <h3>1) Generar código QR</h3>
+    <label for="qrText">Texto para QR (ej: Nombre o ID)</label>
+    <input id="qrText" type="text" placeholder="Escribe nombre o código...">
+    <div class="controls">
+      <button id="generateBtn">Generar QR</button>
+      <button id="downloadQrBtn" disabled>Descargar imagen</button>
+      <button id="clearQrBtn">Limpiar</button>
+    </div>
+    <div id="qrcode"></div>
+  </div>
+
+  <div class="card">
+    <h3>2) Escanear QR (camara trasera)</h3>
+    <p class="small">Presiona iniciar para abrir la cámara trasera. Asegúrate de dar permiso de cámara al navegador.</p>
+    <div class="controls">
+      <button id="startScanBtn">Iniciar escáner</button>
+      <button id="stopScanBtn" disabled>Detener escáner</button>
+      <select id="camerasSelect" style="display:none;"></select>
+      <button id="takePhotoBtn" style="display:none;">Tomar foto</button>
+    </div>
+    <div id="reader" style="width:100%; max-width:420px; margin-top:10px;"></div>
+  </div>
+
+  <div class="card">
+    <h3>3) Registro de asistencia</h3>
+    <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+      <input id="searchInput" type="search" placeholder="Buscar en la lista (nombre o fecha)">
+      <button id="exportCsvBtn">Exportar CSV (Excel)</button>
+      <button id="clearListBtn">Limpiar lista</button>
+    </div>
+
+    <table id="attendanceTable">
+      <thead>
+        <tr><th>#</th><th>Texto QR</th><th>Fecha</th><th>Hora</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+<script>
+/* ===== GENERAR QR ===== */
+let qr;
+const qrcodeContainer = document.getElementById('qrcode');
+document.getElementById('generateBtn').addEventListener('click', () => {
+  const val = document.getElementById('qrText').value.trim();
+  if(!val){ alert('Escribe texto para generar el QR'); return; }
+  qrcodeContainer.innerHTML = '';
+  qr = new QRCode(qrcodeContainer, {
+    text: val,
+    width: 240,
+    height: 240,
+    colorDark : "#000000",
+    colorLight : "#ffffff",
+    correctLevel : QRCode.CorrectLevel.H
+  });
+  document.getElementById('downloadQrBtn').disabled = false;
+});
+
+document.getElementById('downloadQrBtn').addEventListener('click', () => {
+  // extrae el canvas o img generado por qrcodejs
+  const img = qrcodeContainer.querySelector('img');
+  if(img){
+    const link = document.createElement('a');
+    link.href = img.src;
+    link.download = 'qr.png';
+    link.click();
+    return;
+  }
+  const canvas = qrcodeContainer.querySelector('canvas');
+  if(canvas){
+    const link = document.createElement('a');
+    link.href = canvas.toDataURL('image/png');
+    link.download = 'qr.png';
+    link.click();
+    return;
+  }
+  alert('No hay QR para descargar.');
+});
+
+document.getElementById('clearQrBtn').addEventListener('click', () => {
+  document.getElementById('qrText').value = '';
+  qrcodeContainer.innerHTML = '';
+  document.getElementById('downloadQrBtn').disabled = true;
+});
+
+/* ===== ESCANEAR QR ===== */
+let html5QrScanner = null;
+let currentCameraId = null;
+
+const readerDiv = document.getElementById('reader');
+const startBtn = document.getElementById('startScanBtn');
+const stopBtn = document.getElementById('stopScanBtn');
+const camerasSelect = document.getElementById('camerasSelect');
+
+startBtn.addEventListener('click', async () => {
+  startBtn.disabled = true;
+  try {
+    const cameras = await Html5Qrcode.getCameras();
+    if (cameras && cameras.length) {
+      // intenta encontrar cámara trasera buscando 'back'/'rear' en label
+      let rear = cameras.find(c => /back|rear|trasera|environment/i.test(c.label));
+      if(!rear) rear = cameras[0]; // fallback
+      currentCameraId = rear.id;
+      // llena select (opcional)
+      camerasSelect.style.display='inline-block';
+      camerasSelect.innerHTML = '';
+      cameras.forEach(cam=>{
+        const opt = document.createElement('option');
+        opt.value = cam.id;
+        opt.textContent = cam.label || cam.id;
+        camerasSelect.appendChild(opt);
+      });
+      camerasSelect.value = currentCameraId;
+
+      html5QrScanner = new Html5Qrcode(/* element id */ "reader");
+      await html5QrScanner.start(
+        { deviceId: { exact: currentCameraId } },
+        { fps: 10, qrbox: { width: 280, height: 280 } },
+        qrCodeSuccessCallback
+      );
+      stopBtn.disabled = false;
+      startBtn.disabled = true;
+    } else {
+      alert('No se encontraron cámaras en el dispositivo.');
+      startBtn.disabled = false;
+    }
+  } catch (err) {
+    console.error(err);
+    alert('Error iniciando la cámara: ' + (err && err.message ? err.message : err));
+    startBtn.disabled = false;
+  }
+});
+
+stopBtn.addEventListener('click', async () => {
+  if(html5QrScanner){
+    await html5QrScanner.stop();
+    html5QrScanner.clear();
+    html5QrScanner = null;
+  }
+  readerDiv.innerHTML = '';
+  stopBtn.disabled = true;
+  startBtn.disabled = false;
+});
+
+/* cuando el usuario cambie manualmente la cámara en el select */
+camerasSelect.addEventListener('change', async () => {
+  const newId = camerasSelect.value;
+  if(!newId) return;
+  if(html5QrScanner){
+    await html5QrScanner.stop();
+    html5QrScanner.clear();
+  }
+  currentCameraId = newId;
+  html5QrScanner = new Html5Qrcode("reader");
+  html5QrScanner.start(
+    { deviceId: { exact: currentCameraId } },
+    { fps: 10, qrbox: { width: 280, height: 280 } },
+    qrCodeSuccessCallback
+  ).catch(e=>console.error(e));
+});
+
+/* callback cuando se detecta un QR */
+function qrCodeSuccessCallback(decodedText, decodedResult) {
+  // decodedText: el contenido del QR
+  addAttendance(decodedText);
+  // si quieres que deje de escanear automáticamente después de detectar, coméntalo:
+  // html5QrScanner.stop();
+}
+
+/* ===== GESTIONAR LISTA DE ASISTENCIA ===== */
+let attendance = []; // {text, dateISO, date, time}
+
+function addAttendance(text) {
+  const now = new Date();
+  const dateISO = now.toISOString();
+  const date = now.toLocaleDateString();
+  const time = now.toLocaleTimeString();
+  attendance.push({ text, dateISO, date, time });
+  renderTable();
+}
+
+function renderTable(filter='') {
+  const tbody = document.querySelector('#attendanceTable tbody');
+  tbody.innerHTML = '';
+  const f = filter.trim().toLowerCase();
+  attendance.forEach((row, i)=>{
+    if(f){
+      const combined = (row.text + ' ' + row.date + ' ' + row.time).toLowerCase();
+      if(!combined.includes(f)) return;
+    }
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i+1}</td><td>${escapeHtml(row.text)}</td><td>${escapeHtml(row.date)}</td><td>${escapeHtml(row.time)}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function escapeHtml(s){ return (s+'').replace(/[&<>"']/g, (m)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+document.getElementById('searchInput').addEventListener('input', (e)=> {
+  renderTable(e.target.value);
+});
+
+document.getElementById('clearListBtn').addEventListener('click', ()=> {
+  if(!confirm('¿Borrar todo el registro de asistencia?')) return;
+  attendance = [];
+  renderTable();
+});
+
+/* Exportar CSV para Excel */
+document.getElementById('exportCsvBtn').addEventListener('click', () => {
+  if(attendance.length === 0){ alert('No hay registros para exportar.'); return; }
+  const header = ['#','Texto QR','Fecha','Hora'];
+  const rows = attendance.map((r, i)=> [i+1, r.text, r.date, r.time]);
+  const csv = [header, ...rows].map(row => row.map(item => `"${String(item).replace(/"/g,'""')}"`).join(',')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `asistencia_${(new Date()).toISOString().slice(0,19).replace(/:/g,'-')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+/* función para pre-copiar texto QR sin escanear (útil para probar) */
+document.getElementById('qrText').addEventListener('keydown', (e)=> {
+  if(e.key === 'Enter') { document.getElementById('generateBtn').click(); }
+});
+
+/* utilidad: si quieres añadir manualmente un registro (ej: pruebas) */
+// addAttendance('JEFFERI OZUNA - ID12345');
+
+/* Evita que se pierda la lista al recargar: opcional (comentada) */
+// window.addEventListener('beforeunload', ()=> localStorage.setItem('attendance', JSON.stringify(attendance)) );
+// (function loadSaved(){ const s = localStorage.getItem('attendance'); if(s){attendance = JSON.parse(s); renderTable();}})();
+
+</script>
+</body>
+</html>
